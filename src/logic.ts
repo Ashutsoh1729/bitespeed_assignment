@@ -1,5 +1,5 @@
 import { db } from "./db/client";
-import { eq, or } from "drizzle-orm";
+import { eq, or, inArray } from "drizzle-orm";
 import { contacts } from "./db/schema";
 
 export interface IdentifyResponse {
@@ -48,15 +48,33 @@ export async function handleRequest(
             return newContact;
         }
 
-        // TODO: Needed to work upon
         // SUPER CASE: 2, 3, 4 - Prior data exists
+
+        // TODO: One action file is planned for implementation, at  'docs/brainstorm/full_chain_resolution_plan.md
         else {
 
             // handled cases are - 
             // CASE: 2 - Exact match
             // CASE: 3 - Partial match
-            // TODO: CASE: 4 - Two separate primaries get linked
+            // CASE: 4 - Two separate primaries get linked
 
+            // Edge case: if only secondary contacts were matched,
+            // fetch their parent primaries via linkedId
+            const secondaryLinkedIds = existingContacts
+                .filter(c => c.linkPrecedence === "secondary" && c.linkedId !== null)
+                .map(c => c.linkedId!);
+
+            if (secondaryLinkedIds.length > 0) {
+                const parentPrimaries = await tx
+                    .select()
+                    .from(contacts)
+                    .where(inArray(contacts.id, secondaryLinkedIds));
+
+                const existingIds = new Set(existingContacts.map(c => c.id));
+                for (const p of parentPrimaries) {
+                    if (!existingIds.has(p.id)) existingContacts.push(p);
+                }
+            }
 
             // no of primary contacts
             const primaryContacts = existingContacts.filter(
@@ -141,18 +159,22 @@ export async function handleRequest(
         }
     })!;
 
+    const primary = result.find(c => c.linkPrecedence === "primary")!;
+
     const response = {
         contact: {
-            primaryContactId: result[0]!.id,
-            emails: result
-                .map((contact) => contact.email)
+            primaryContactId: primary.id,
+            emails: [primary.email, ...result
+                .filter(c => c.id !== primary.id)
+                .map(c => c.email)]
                 .filter((e): e is string => e !== null),
-            phoneNumbers: result
-                .map((contact) => contact.phoneNumber)
+            phoneNumbers: [primary.phoneNumber, ...result
+                .filter(c => c.id !== primary.id)
+                .map(c => c.phoneNumber)]
                 .filter((p): p is string => p !== null),
             secondaryContactIds: result
-                .filter((contact) => contact.linkPrecedence === "secondary")
-                .map((contact) => contact.id),
+                .filter(c => c.linkPrecedence === "secondary")
+                .map(c => c.id),
         },
     };
 
